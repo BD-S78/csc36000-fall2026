@@ -144,11 +144,25 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
         req = {k: v for k, v in req.items() if v is not None}
 
         t_call0 = time.perf_counter()
+        
+        #for this part of the code, I will implement a backwards recovery. 
+        #Meaning that we will sent the request again.
+        flag_point = 0
+        try:
+            resp=_post_json(url,req,timeout_s=3600)
+        except Exception as e:
+            print(f"The node {node['node_is']} was unreachable")
+            flag_point = 1
+            raise
+        
+        if flag_point != 0:
+            resp=_post_json(url,req,timeout_s=3600)
+            
         resp = _post_json(url, req, timeout_s=3600)
         t_call1 = time.perf_counter()
 
-        if not resp.get("ok"):
-            raise RuntimeError(f"node {node['node_id']} error: {resp}")
+        #if not resp.get("ok"):
+            #raise RuntimeError(f"node {node['node_id']} error: {resp}")
         
         node_elapsed_s = float(resp.get("elapsed_seconds", 0.0))
         print(f"Node ID: {node['node_id']} completed in: {node_elapsed_s}")
