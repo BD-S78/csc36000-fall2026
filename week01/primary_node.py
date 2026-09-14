@@ -160,12 +160,13 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 #In this case, the node could not do the computation. Do there is something wrong 
                 #with it that makes it unreachable.
-                print(f"The node {node['node_id']} computation wasn't possible")  
+                print(f"The node {node['node_id']} computation wasn't possible")
+                raise RuntimeError(f"node {node['node_id']} retry has failed") 
         
         t_call1 = time.perf_counter()
 
-        #if not resp.get("ok"):
-            #raise RuntimeError(f"node {node['node_id']} error: {resp}")
+        if not resp.get("ok"):
+            raise RuntimeError(f"node {node['node_id']} error: {resp}")
         
         node_elapsed_s = float(resp.get("elapsed_seconds", 0.0))
         print(f"Node ID: {node['node_id']} completed in: {node_elapsed_s}")
@@ -186,7 +187,11 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
         futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
         for f in as_completed(futs):
-            per_node_results.append(f.result())
+            
+            if f.execption() is None:
+                print("This task failed!")
+            else:
+                per_node_results.append(f.result())
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
