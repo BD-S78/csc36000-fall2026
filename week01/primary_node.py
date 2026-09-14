@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 
 class Registry:
-    def __init__(self, ttl_s: int = 3600):
+    def __init__(self, ttl_s: int = 30):
         self.ttl_s = ttl_s
         self.lock = threading.Lock()
         self.nodes: Dict[str, Dict[str, Any]] = {}
@@ -44,6 +44,7 @@ class Registry:
             "cpu_count": int(node.get("cpu_count", 1)),
             "last_seen": float(node.get("ts", now)),
             "registered_at": now,
+            "status": "active",
         }
         with self.lock:
             if node_id in self.nodes:
@@ -51,16 +52,27 @@ class Registry:
             self.nodes[node_id] = record
             return record
 
+    def remove(self, node_id: str) -> bool:
+        with self.lock:
+            if node_id in self.nodes:
+                del self.nodes[node_id]
+                return True
+            return False
+
     def active_nodes(self) -> List[Dict[str, Any]]:
         now = time.time()
         with self.lock:
-            stale = [nid for nid, rec in self.nodes.items() if (now - float(rec.get("last_seen", 0))) > self.ttl_s]
+            stale = [
+                nid for nid, rec in self.nodes.items()
+                if (now - float(rec.get("last_seen", 0))) > self.ttl_s
+            ]
             for nid in stale:
+                self.nodes[nid]["status"] = "stale"
                 del self.nodes[nid]
             return list(self.nodes.values())
 
 
-REGISTRY = Registry(ttl_s=120)
+REGISTRY = Registry(ttl_s=30)
 
 
 def _post_json(url: str, payload: Dict[str, Any], timeout_s: int = 60) -> Dict[str, Any]:
@@ -250,13 +262,21 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._send_json({"ok": False, "error": f"bad json: {e}"}, code=400)
 
-        if parsed.path == "/register":
+        if parsed.path in ("/register", "/heartbeat"):
             for k in ("node_id", "host", "port"):
                 if k not in payload:
                     return self._send_json({"ok": False, "error": f"missing field: {k}"}, code=400)
             rec = REGISTRY.upsert(payload)
-            print(f"[primary_node] Added node: {payload} to registry")
-            return self._send_json({"ok": True, "node": rec})
+            print(f"[primary_node] {parsed.path} from node: {payload['node_id']}")
+            return self._send_json({"ok": True, "node": rec, "active_nodes": len(REGISTRY.active_nodes())})
+
+        if parsed.path == "/unregister":
+            node_id = payload.get("node_id")
+            if not node_id:
+                return self._send_json({"ok": False, "error": "missing field: node_id"}, code=400)
+            removed = REGISTRY.remove(str(node_id))
+            print(f"[primary_node] Removed node: {node_id} via unregister")
+            return self._send_json({"ok": True, "removed": removed, "active_nodes": len(REGISTRY.active_nodes())})
 
         if parsed.path == "/compute":
             try:
@@ -278,7 +298,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Primary coordinator for distributed prime computation.")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9200)
-    ap.add_argument("--ttl", type=int, default=3600, help="Seconds to keep node registrations alive (default 3600).")
+    ap.add_argument("--ttl", type=int, default=30, help="Seconds before a secondary is treated as failed if no heartbeat is received (default 30).")
     args = ap.parse_args()
 
     global REGISTRY
