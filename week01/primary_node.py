@@ -63,6 +63,16 @@ class Registry:
 REGISTRY = Registry(ttl_s=120)
 
 
+def is_healthy(node: Dict[str, Any]) -> bool:
+    #detect a failure in the secondary node by pulling its health endpoint
+    #this detects failures in a node before running.
+    try:
+        with urllib.request.urlopen(f"http://{node['host']}:{node['port']}/health", timeout=1):
+            return True
+    except Exception:
+        return False
+
+
 def _post_json(url: str, payload: Dict[str, Any], timeout_s: int = 60) -> Dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
@@ -112,10 +122,15 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
     nodes = REGISTRY.active_nodes()
     if not nodes:
         raise ValueError("no active secondary nodes registered")
+
+    #potentially transient so just dont include it in the run for calculations.
+    healthy_nodes = [n for n in nodes if is_healthy(n)]
+    if not healthy_nodes:
+        raise ValueError("no healthy secondary nodes available")
     
     chunk = int(payload.get("chunk", 500_000))
 
-    nodes_sorted = sorted(nodes, key=lambda n: n["node_id"])
+    nodes_sorted = sorted(healthy_nodes, key=lambda n: n["node_id"])
     slices = split_into_slices(low, high, len(nodes_sorted))
     nodes_sorted = nodes_sorted[:len(slices)]
 
@@ -166,10 +181,31 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             "primes_truncated": bool(resp.get("primes_truncated", False)),
         }
 
+    #also mitigating the node failures in the middle of work by retrying failed slices on surviving nodes.
+    #to get the same forward progress. Simplisitic 1 time retry on a surviving node to not take too long.
+    failed_slices = []
+    surviving_nodes = []
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
-        futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
-        for f in as_completed(futs):
-            per_node_results.append(f.result())
+        future_to_task = {
+            ex.submit(call_node, node, sl): (node, sl)
+            for node, sl in zip(nodes_sorted, slices)
+        }
+        for f in as_completed(future_to_task):
+            node, sl = future_to_task[f]
+            try:
+                per_node_results.append(f.result())
+                surviving_nodes.append(node)
+            except Exception as e:
+                print(f"[primary_node] Node {node['node_id']} failed on slice {sl}: {e}")
+                failed_slices.append(sl)
+
+    if failed_slices:
+        if not surviving_nodes:
+            raise RuntimeError("All secondary nodes failed to compute their slices.")
+        for i, sl in enumerate(failed_slices):
+            backup_node = surviving_nodes[i % len(surviving_nodes)]
+            print(f"[primary_node] Retrying slice {sl} on surviving node {backup_node['node_id']}...")
+            per_node_results.append(call_node(backup_node, sl))
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
