@@ -122,6 +122,7 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.perf_counter()
 
     per_node_results: List[Dict[str, Any]] = []
+    failed_slices: List[Tuple[Tuple[int, int], str]] = []
     total_primes = 0
     primes_sample: List[int] = []
     primes_truncated = False
@@ -167,9 +168,34 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
-        futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
-        for f in as_completed(futs):
-            per_node_results.append(f.result())
+        future_to_work = {
+            ex.submit(call_node, node, sl): (node, sl)
+            for node, sl in zip(nodes_sorted, slices)
+        }
+        for f in as_completed(future_to_work):
+            node, sl = future_to_work[f]
+            try:
+                per_node_results.append(f.result())
+            except Exception as e:
+                failed_slices.append((sl, node["node_id"]))
+                print(f"Secondary node {node['node_id']} failed on slice {sl}: {e}")
+
+    for sl, failed_node_id in failed_slices:
+        retry_succeeded = False
+        for node in nodes_sorted:
+            if node["node_id"] == failed_node_id:
+                continue
+
+            try:
+                print(f"Retrying slice {sl} from {failed_node_id} on {node['node_id']}")
+                per_node_results.append(call_node(node, sl))
+                retry_succeeded = True
+                break
+            except Exception as e:
+                print(f"Retry on node {node['node_id']} failed: {e}")
+
+        if not retry_succeeded:
+            raise RuntimeError(f"Unable to complete failed slice {sl}")
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
