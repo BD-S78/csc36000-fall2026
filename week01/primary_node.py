@@ -185,11 +185,28 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     with ThreadPoolExecutor(max_workers=min(32, len(nodes_sorted))) as ex:
-        futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
-        for f in as_completed(futs):
+        #futs = [ex.submit(call_node, node, sl) for node, sl in zip(nodes_sorted, slices)]
+        data={} # place to see the data of each node
+        #To better understand the code, I will change it a bit
+        for node, sl in zip(nodes_sorted,slices):
+            futs= ex.submit(call_node,node,sl)
+            data[futs]=(node,sl)
+            
+            
+        for f in as_completed(data):
             
             if f.execption() is None:
-                print("This task failed!")
+                #If the node failed, print the failure
+                r_node,r_sl=data[f]
+                print(f"{r_node["node_id"]} has failed with slice {r_sl}! Moving Slice to the next avaliable node.")
+            elif f and r_node and r_sl:
+                per_node_results.append(f.result())
+                node,sl=data[f]
+                futs= ex.submit(call_node,node,r_sl)
+                new_f= as_completed(futs)
+                per_node_results.append(new_f.reut())
+                
+             
             else:
                 per_node_results.append(f.result())
 
