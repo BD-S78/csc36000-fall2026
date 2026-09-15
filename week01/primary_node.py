@@ -192,23 +192,30 @@ def distributed_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
             futs= ex.submit(call_node,node,sl)
             data[futs]=(node,sl)
             
-            
+        failed_nodes=[]
         for f in as_completed(data):
-            
-            if f.execption() is None:
+            node,sl=data[f]
+            if f.exception() is not None:
                 #If the node failed, print the failure
-                r_node,r_sl=data[f]
-                print(f"{r_node["node_id"]} has failed with slice {r_sl}! Moving Slice to the next avaliable node.")
-            elif f and r_node and r_sl:
-                per_node_results.append(f.result())
-                node,sl=data[f]
-                futs= ex.submit(call_node,node,r_sl)
-                new_f= as_completed(futs)
-                per_node_results.append(new_f.reut())
                 
-             
+                print(f"{node["node_id"]} has failed with slice {sl}! Moving Slice to the next avaliable node.")
+                failed_nodes.append((node,sl))
             else:
                 per_node_results.append(f.result())
+        #we will double through both list to get a working node for the failed slices
+        for node in nodes_sorted:
+            for fail_node in failed_nodes:
+                if node["node_id"] != fail_node["node_id"]:
+                    working_node=node
+                    break
+        
+        for fail_node, slice in failed_nodes:
+            print(f"The failed node {fail_node["node_id"]} will be using the node {working_node["node_id"]}")
+            futs= ex.submit(call_node,working_node,slice)
+            per_node_results.append(futs.result())
+            
+        
+            
 
     per_node_results.sort(key=lambda r: r["slice"][0])
 
