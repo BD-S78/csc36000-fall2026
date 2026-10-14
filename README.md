@@ -28,6 +28,8 @@ The purpose of this repository is for the instructor to share code with the enti
 5. Individual and group coding assignments will be submitted to your branch which will show clearly your contributions
 6. For group projects, you will create a branch with your email alias and the feature you are assigned to implement.  For example, if the feature is "Implement Counter for each node", your branch could be kbrown/implement_counter.  Each student must create a pull request to merge their feature to the main branch.  The team lead for the week is responsible for apporving the pull request to merge the code.
 
+This week’s group work is in [`week06/README.md`](week06/README.md). Every group builds the same key/value platform. Put the design, role roster, and code in your **group** repository.
+
 ---
 
 ## Clone a repository
