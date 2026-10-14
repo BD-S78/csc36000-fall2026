@@ -10,8 +10,8 @@ Submit in the **group Bitbucket repository** (the same repo the group already us
 
 | When | What |
 | --- | --- |
-| **Wednesday, October 21, 2026, 11:59pm EST** | `DESIGN.md` on `main` (merge a pull request if the group works on a branch) |
-| **Wednesday, October 28, 2026, 11:59pm EST** | Working plugin code, also in the group repo |
+| **Tuesday, October 20, 2026, 11:59pm EST** | `DESIGN.md` on `main` (merge a pull request if the group works on a branch) |
+| **Tuesday, October 27, 2026, 11:59pm EST** | Working plugin code, also in the group repo |
 
 One group member copies this `week06/` folder into the group repo. `DESIGN.md` goes at the **root** of that repo — start from [DESIGN_TEMPLATE.md](DESIGN_TEMPLATE.md).
 
