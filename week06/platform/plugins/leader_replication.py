@@ -22,6 +22,8 @@ class Plugin(PluginBase):
         ``None`` means this node continues and stores. A WriteResponse means
         the plugin already forwarded or failed (``not leader``, hop limit, …).
         """
+        # Note: In SINGLE_LEADER, only node.leader admits writes (followers reject with "not leader").
+        # In MULTI_LEADER and LEADERLESS, any node admits writes locally.
         raise NotImplementedError("leader_replication.admit")
 
     def after_local_write(
@@ -32,4 +34,9 @@ class Plugin(PluginBase):
         owner: str,
     ) -> None:
         """After a successful local Write: MULTI_LEADER copies to other leaders."""
+        # Architectural note on MULTI_LEADER:
+        # The codebase only provides a single `node.leader` string (for SINGLE_LEADER)
+        # and has no configuration to designate a mix of leaders and followers.
+        # Because all nodes are treated as peer leaders in MULTI_LEADER, copying
+        # to "other leaders" simply means replicating to all reachable peers in node.other_nodes().
         raise NotImplementedError("leader_replication.after_local_write")
