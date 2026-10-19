@@ -13,7 +13,7 @@ Each person lists a different plugin filename.
 | Student name | CUNY alias | Plugin filename | Feature branch |
 | --- | --- | --- | --- |
 | Bryan Dong | bryan.dong64 | leader_replication.py | bryan.dong64/leader_replication |
-|  |  |  |  |
+| Misael Perez Ramales | misael.perez66 | replication.py | misael.perez66/replication |
 |  |  |  |  |
 |  |  |  |  |
 |  |  |  |  |
@@ -30,7 +30,36 @@ Repeat this block for each person.
 **Modes we will implement** (see that plugin’s section in `week06/README.md`):  
 **One history we will demo** (the fault or change, the Writes/Reads, the bytes you expect on which node):  
 **Commands** (provided client, against a `node` cluster):  
-**A mode combination that should fail, and the error Write or Read returns:**  
+**A mode combination that should fail, and the error Write or Read returns:**
+
+**Plugin file:** replication.py  
+**Modes we will implement:** STATE, LOG, LOG_WITH_SNAPSHOT
+**One history we will demo:** We have several replicas with node `n0` being the owner (it doesn't matter which node is the owner). There will be a several writes on `n0`, which can be a series of random numbers. In this scenario we will have one to three nodes paused. Let's say `n2` is paused during the entire series of writes. For the mode STATE, we will only record the value of `alpha= ###`. Using the state of an unpaused node, we will wire the state of the node to `n2` and return the value. For mode LOG, we will record the operation. For example, `write(alpha, 2)` we will apply these operations to the node `n2` until the current operation. For mode LOG_WITH_SNAPSHOT, we will have a SNAPSHOT/checkpoint in the history of the log operation. We will display the SNAPSHOT and then apply all the operation until the current operation to the node `n2`.
+**Commands:** 
+```bash
+#using an example of three nodes
+python3 -m platform.node --node-id n0 --port 9600 --config cluster.json 
+python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+#We will have our client in a separate terminal
+#Now we have to pause and unpause a node n2
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause off
+#We will have writes like using n0 as the owner 
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha ten --replication LOG
+#An example of writing into owner node with the mode at the end
+#always include the --replication flag and the mode you are using
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --replication STATE 
+#reading the node with the mode at the end and 
+python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication LOG
+
+```
+**A mode combination that should fail, and the error Write or Read returns:**
+writing to a node that is paused. For example, node n2 so 9602
+```bash
+python3 -m platform.client --addr 127.0.0.1:9602 write alpha ten --replication LOG
+```
+It should return a `node=paused`
 
 **Plugin file:** leader_replication.py  
 **Modes we will implement:** SINGLE_LEADER, LEADERLESS, MULTI_LEADER  
@@ -80,9 +109,9 @@ Keep the tables for the plugins your group owns; you can drop the others.
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| STATE |  |  |  |  |
-| LOG |  |  |  |  |
-| LOG_WITH_SNAPSHOT |  |  |  |  |
+| STATE | pausing a node | "write" should write the desired value to the owner, and then the other replicas. The other replicas should write the state == value of alpha | The specific node of your choice, it should read the state of the node (the value) | We focus on the current state instead of the sequence of events leading up to it |
+| LOG | pausing a node | "write" should write the desired value to the owner, and then write the operations sequence to the replicas. So we have `write(alpha,1)` for example as an operation | "read" on a replica should display the list of operations leading up to the current operation | The runtime on this mode will be a slightly slower than STATE |
+| LOG_WITH_SNAPSHOT | pausing a node | "write" should write the desired value to the owner. For the replicas, there should be a snapshot. It can't be the first operation. From the point of the snapshot, the replicas records the operations from there. | "Read" should read the operations from the point of the snapshot up to the current operation | We are giving up a portion for operation to read the operations faster and get the return value. |
 
 ### write_completion.py
 
