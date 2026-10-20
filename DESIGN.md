@@ -200,6 +200,7 @@ Leader election (Bully, ring, majority/term). The leader is killed, or the membe
 If you own one of these files, say a little more:
 
 - **replication.py:** for two Writes, what goes on the wire for state vs log vs snapshot catch-up
+When mode STATE has two writes, we will update the node to the latest state from the owner. When the mode is LOG, we will update the node using the sequence of operations that another unpaused replica has. `write(alpha, 1)` and `write(alpha,2)` for example are operations that will be applied to the node that was paused (we have to unpause it first). LOG_WITH_SNAPSHOT would use the snapshot in the history of the operations and then apply all the operations after that snapshot. In the case of only two writes, the snapshot would be the first write and then apply the second write.
 - **conflicts.py:** the exact rule that turns two blobs into one, for each policy
 - **processing_guarantees.py:** the step list, the idempotency key, how resume from a log differs from resume from a snapshot
 - **atomic_commit.py:** the 2PC messages for keys `a` and `b`; how saga compensation restores `a`; what the plugin does if a participant is killed in prepare
