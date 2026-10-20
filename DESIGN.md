@@ -14,7 +14,7 @@ Each person lists a different plugin filename.
 | --- | --- | --- | --- |
 | Bryan Dong | bryan.dong64 | leader_replication.py | bryan.dong64/leader_replication |
 | Misael Perez Ramales | misael.perez66 | replication.py | misael.perez66/replication |
-|  |  |  |  |
+| Xinhang Yang | xinhang.yang65 | request_routing.py | xinhang.yang65/request_routing |
 |  |  |  |  |
 |  |  |  |  |
 
@@ -83,6 +83,52 @@ python3 -m platform.client --addr 127.0.0.1:9601 read alpha
 ```
 **A mode combination that should fail, and the error Write or Read returns:**  
 A Write to a follower (`n1` or `n2`) with `--leader-replication SINGLE_LEADER` returns `ok=False error="not leader"`.
+
+**Plugin file:** request_routing.py  
+**Modes we will implement:** FORWARD, DIRECTORY_TIER, CLIENT_AWARE  
+**One history we will demo:** Three nodes from `cluster.json`. With no partitioning plugin, the owner of every key is the first id in `node.nodes` (sorted by length, then name), so `n0` owns everything and `n1` is a non-owner. Under `FORWARD`, `alpha=one` sent to `n1` is passed on to `n0` with `hop=1` and returns `ok=True owner=n0`; a Read of `alpha` on `n1` is also passed on and comes back `served_by=n0`. Under `CLIENT_AWARE`, `beta=one` sent to `n1` returns `ok=False error="not owner" owner=n0` and stores nothing; the client resends it to `n0`. Under `DIRECTORY_TIER`, `n1` looks up `alpha` in its directory (empty, so it uses the owner it computes, `n0`), sends the Write there, and records `alpha -> n0`. Then a node `m` joins; `m` sorts before `n0`, so it now owns every key and `n1`'s entry is stale. The next `alpha=three` goes to `n0`, `n0` answers `not owner` with `owner=m`, and `n1` fixes the entry and retries once to `m`, which stores it. Last, two nodes are made to disagree about the owner so they point at each other: `FORWARD` passes the Write back and forth and stops with `hop limit` after 8 forwards.  
+**Commands** (provided client, against a `node` cluster):  
+```bash
+# from week06/, one terminal per node
+python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+
+# FORWARD: n1 is not the owner. ok=True owner=n0
+python3 -m platform.client --addr 127.0.0.1:9601 write alpha one --request-routing FORWARD
+# the Read is passed on too: served_by=n0 value=one
+python3 -m platform.client --addr 127.0.0.1:9601 read alpha --request-routing FORWARD
+
+# CLIENT_AWARE: ok=False error='not owner' owner=n0, nothing stored
+python3 -m platform.client --addr 127.0.0.1:9601 write beta one --request-routing CLIENT_AWARE
+# the client resends to the owner itself: ok=True owner=n0
+python3 -m platform.client --addr 127.0.0.1:9600 write beta one --request-routing CLIENT_AWARE
+
+# DIRECTORY_TIER: n1 looks up alpha (n0), sends, and records alpha -> n0
+python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --request-routing DIRECTORY_TIER
+# a node m joins; "m" sorts before "n0", so m now owns every key
+python3 -m platform.node --node-id m --port 9603 --peers m=127.0.0.1:9603,n0=127.0.0.1:9600,n1=127.0.0.1:9601,n2=127.0.0.1:9602
+python3 -m platform.client --addr 127.0.0.1:9600 add-node m 127.0.0.1 9603
+python3 -m platform.client --addr 127.0.0.1:9601 add-node m 127.0.0.1 9603
+python3 -m platform.client --addr 127.0.0.1:9602 add-node m 127.0.0.1 9603
+# stale entry: n0 answers not owner (owner=m), n1 retries once to m. ok=True owner=m
+python3 -m platform.client --addr 127.0.0.1:9601 write alpha three --request-routing DIRECTORY_TIER
+# value=three on the new owner
+python3 -m platform.client --addr 127.0.0.1:9603 read alpha
+
+# routing loop: n1 and n2 each think a node "a" owns every key ("a" sorts first),
+# and each points "a" at the other one
+python3 -m platform.client --addr 127.0.0.1:9601 add-node a 127.0.0.1 9602
+python3 -m platform.client --addr 127.0.0.1:9602 add-node a 127.0.0.1 9601
+# FORWARD bounces n1 -> n2 -> n1 ...: ok=False error='hop limit'
+python3 -m platform.client --addr 127.0.0.1:9601 write gamma one --request-routing FORWARD
+```
+**A mode combination that should fail, and the error Write or Read returns:**  
+`--request-routing FORWARD` while two nodes point at each other as the owner (the last step above): each forward adds 1 to `hop`, and after 8 forwards the Write returns `ok=False error='hop limit'` instead of looping. `CLIENT_AWARE` on a non-owner also returns `ok=False error='not owner'`, but that refusal is the mode working as designed.  
+**Notes:**
+- With no `--request-routing` flag the node default stays: a non-owner answers `not owner`.
+- DIRECTORY_TIER: a Write that already came from a routing node (`hop > 0`) is not routed again. A non-owner answers `not owner` with the owner it knows, so the sender can fix its directory and retry once. If the retry also fails, the Write returns that error rather than guessing again.
+- For `leader_replication.py`: `Write` in `node.py` asks `leader_replication.admit` first and only reaches this plugin when `admit` raises `NotImplementedError`. To run both plugins in one cluster, `admit` should raise `NotImplementedError` when the Write has no `--leader-replication` flag. Reads are not affected.
 
 
 ## Tradeoffs
@@ -161,9 +207,9 @@ Keep the tables for the plugins your group owns; you can drop the others.
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| FORWARD |  |  |  |  |
-| DIRECTORY_TIER |  |  |  |  |
-| CLIENT_AWARE |  |  |  |  |
+| FORWARD | Write `alpha` on `n1`, which is not the owner (`n0` is) | `n1` sends the Write on to `n0` with `hop=1`; `n0` stores it and the client gets `ok=True owner=n0` | Read `alpha` on `n0` returns the bytes. A Read on `n1` is passed on as well and returns them with `served_by=n0` | Every misrouted request costs an extra hop. When nodes disagree about the owner a request can loop, and only the hop limit (8) stops it |
+| DIRECTORY_TIER | A node `m` joins and takes over `alpha` after `n1` recorded `alpha -> n0` | `n1` looks up `alpha` (`n0`) and sends there; `n0` answers `not owner` with `owner=m`; `n1` fixes the entry and retries once to `m`, which stores it | Read `alpha` on `m` returns the new bytes. `n0` still holds the bytes it stored before `m` joined (moving them is the partitioning plugin's job) | A lookup before each request, and a directory that can be stale. One retry fixes one stale entry; if the directory is wrong twice, the Write fails |
+| CLIENT_AWARE | Write `beta` on `n1`, which is not the owner | `n1` stores nothing and returns `ok=False error="not owner" owner=n0`; the client resends to `n0` | Read on `n1` returns `not owner` even if it has a copy; Read on `n0` returns the bytes once the client resent the Write there | The cluster does less work, but every client has to know the owner map and redo the request itself |
 
 ### leader_election.py
 
