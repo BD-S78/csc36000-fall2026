@@ -15,7 +15,7 @@ Each person lists a different plugin filename.
 | Bryan Dong | bryan.dong64 | leader_replication.py | bryan.dong64/leader_replication |
 | Misael Perez Ramales | misael.perez66 | replication.py | misael.perez66/replication |
 | Xinhang Yang | xinhang.yang65 | request_routing.py | xinhang.yang65/request_routing |
-|  |  |  |  |
+| David Girgis | David.Girgis64 | write_completion.py | Dgirgis000/write_completion |
 |  |  |  |  |
 
 ## Platform reminder
@@ -130,6 +130,29 @@ python3 -m platform.client --addr 127.0.0.1:9601 write gamma one --request-routi
 - DIRECTORY_TIER: a Write that already came from a routing node (`hop > 0`) is not routed again. A non-owner answers `not owner` with the owner it knows, so the sender can fix its directory and retry once. If the retry also fails, the Write returns that error rather than guessing again.
 - For `leader_replication.py`: `Write` in `node.py` asks `leader_replication.admit` first and only reaches this plugin when `admit` raises `NotImplementedError`. To run both plugins in one cluster, `admit` should raise `NotImplementedError` when the Write has no `--leader-replication` flag. Reads are not affected.
 
+**Plugin file:** write_completion.py
+**Modes we will implement:** ACK_ONE, ACK_QUORUM, ACK_ALL
+**One history we will demo:** Start n0, n1, and n2, then pause n2. Write a different key in each mode so earlier runs cannot affect the result. ACK_ONE returns after one acknowledgment; ACK_QUORUM returns after two; ACK_ALL returns `ok=False error='ack timeout'` because n2 cannot acknowledge. The `acked_by` list shows which nodes completed each Write. Unpause n2, run `rebalance` to retry missing copies, and Read the keys on n2; each repaired key has its written bytes. A timed-out Write may already have reached some nodes, so its failure does not mean rollback.
+
+**Commands** (from `week06/`, with all three nodes started using `cluster.json`):
+```bash
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_one one --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_quorum two --write-completion ACK_QUORUM
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_all three --write-completion ACK_ALL
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause off
+python3 -m platform.client --addr 127.0.0.1:9600 rebalance --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_one
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_quorum
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_all
+```
+**A mode combination that should fail, and the error Write or Read returns:** Pause n1 and n2, then Write `alpha_fail=four` on n0 with `--write-completion ACK_QUORUM`. Only one of three members can acknowledge, so Write returns `ok=False error='ack timeout'`.
+
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_fail four --write-completion ACK_QUORUM
+```
 
 ## Tradeoffs
 
@@ -165,9 +188,11 @@ Keep the tables for the plugins your group owns; you can drop the others.
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| ACK_ALL |  |  |  |  |
-| ACK_ONE |  |  |  |  |
-| ACK_QUORUM |  |  |  |  |
+| ACK_ALL | Pause n2 in a three-node cluster. | Cannot collect all three acknowledgments, so returns `ok=False error='ack timeout'`. n0 or n1 may still have applied the Write. | After n2 resumes and repair runs, Read `alpha_all` on n2 returns `three`. | One slow or unavailable member prevents a successful Write. |
+| ACK_ONE | Pause n2 in a three-node cluster. | Returns `ok=True` after one acknowledgment, even though n2 has not received the bytes. | Before repair, n2 can have stale or missing bytes; after it resumes and repair runs, Read `alpha_one` on n2 returns `one`. | An acknowledged value may exist on only one node, so losing that node risks losing the Write. |
+| ACK_QUORUM | Pause n2; for a separate Write, pause n1 and n2. | With N=3, returns `ok=True` after two acknowledgments; returns `ack timeout` when fewer than two can acknowledge. | An acknowledged replica has the new bytes. A single-node Read on a stale replica is not guaranteed current until repair; after repair, Read `alpha_quorum` on n2 returns `two`. | A majority must be reachable, increasing latency and reducing Write availability compared with ACK_ONE. |
+
+W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM for `N//2 + 1`, and ACK_ALL for `N`, where `N = len(node.nodes)`. The plugin records copies still needing delivery and retries them during repair. ACK_QUORUM controls Write completion only; the provided client does not perform quorum Reads.
 
 ### leader_replication.py
 
