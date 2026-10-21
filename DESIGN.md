@@ -76,7 +76,7 @@ python3 -m platform.client --addr 127.0.0.1:9600 read alpha
 python3 -m platform.client --addr 127.0.0.1:9601 read alpha
 ```
 **A mode combination that should fail, and the error Write or Read returns:**  
-A Write to a follower (`n1` or `n2`) with `--leader-replication SINGLE_LEADER` returns `ok=False error="not leader"`.
+A Write to an isolated follower (`n1` or `n2`) with `--leader-replication SINGLE_LEADER` cannot reach the leader to forward and returns `ok=False error="not leader"`.
 
 **Plugin file:** request_routing.py  
 **Modes we will implement:** FORWARD, DIRECTORY_TIER, CLIENT_AWARE  
@@ -182,7 +182,7 @@ W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM fo
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| SINGLE_LEADER | Network split separating leader n0 from followers n1, n2 | Writes to leader n0 succeed; writes to followers n1, n2 fail with `not leader` | Read on n0 returns latest bytes; Read on n1, n2 returns old or empty data | Give up availability on the follower side. We reject writes on n1 and n2 so data never diverges (CP system). |
+| SINGLE_LEADER | Network split separating leader n0 from followers n1, n2 | Writes to leader n0 succeed. Followers n1, n2 fail with `not leader` because the split prevents forwarding to the leader | Read on n0 returns latest bytes; Read on n1, n2 returns old or empty data | Give up availability on the follower side. Followers cannot accept writes when cut off from leader so data never diverges (CP system). |
 | LEADERLESS | Network split separating n0 from n1, n2 | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); neither node copies writes to peers | Read on n0 returns `L`; Read on n1 returns `R`; Read on n2 returns empty / not found | Give up consistency between nodes. We let all nodes accept writes to stay available (AP system), but uncontacted nodes like n2 don't get the update. |
 | MULTI_LEADER | Network split separating n0 from n1, n2 (all nodes act as peer leaders in the implemented system) | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); n1 copies its write to reachable peer n2 | Read on n0 returns `L`; Read on n1 and n2 both return `R` | Give up consistency between the two sides of the split. Both sides stay available to accept writes (AP system), so conflicting values must be merged later. |
 
