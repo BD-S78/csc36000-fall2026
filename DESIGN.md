@@ -26,12 +26,6 @@ Values are opaque bytes.
 
 Repeat this block for each person.
 
-**Plugin file:**  
-**Modes we will implement** (see that plugin’s section in `week06/README.md`):  
-**One history we will demo** (the fault or change, the Writes/Reads, the bytes you expect on which node):  
-**Commands** (provided client, against a `node` cluster):  
-**A mode combination that should fail, and the error Write or Read returns:**
-
 **Plugin file:** replication.py  
 **Modes we will implement:** STATE, LOG, LOG_WITH_SNAPSHOT
 **One history we will demo:** We have several replicas with node `n0` being the owner (it doesn't matter which node is the owner). There will be a several writes on `n0`, which can be a series of random numbers. In this scenario we will have one to three nodes paused. Let's say `n2` is paused during the entire series of writes. For the mode STATE, we will only record the value of `alpha= ###`. Using the state of an unpaused node, we will wire the state of the node to `n2` and return the value. For mode LOG, we will record the operation. For example, `write(alpha, 2)` we will apply these operations to the node `n2` until the current operation. For mode LOG_WITH_SNAPSHOT, we will have a SNAPSHOT/checkpoint in the history of the log operation. We will display the SNAPSHOT and then apply all the operation until the current operation to the node `n2`.
@@ -160,18 +154,6 @@ For each mode you implement, name a fault or change — pause a node, split the 
 
 Keep the tables for the plugins your group owns; you can drop the others.
 
-### partitioning.py
-
-*Think Distributed Systems* ch. 7; *Designing Data-Intensive Applications* ch. 7. Where a key lives, and which keys move when you add a node. HASH_MOD remaps most keys; SLOTS moves about `1/(N+1)`; KEY_RANGE keeps neighbors together; DIRECTORY pin holds; ITEM has no pin. `N` is `len(node.nodes)`.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| HASH_MOD |  |  |  |  |
-| KEY_RANGE |  |  |  |  |
-| SLOTS |  |  |  |  |
-| DIRECTORY |  |  |  |  |
-| ITEM |  |  |  |  |
-
 ### replication.py
 
 *Think Distributed Systems* §8.4.4. What a copy on the wire looks like, and how a node that was down catches up.
@@ -204,28 +186,6 @@ W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM fo
 | LEADERLESS | Network split separating n0 from n1, n2 | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); neither node copies writes to peers | Read on n0 returns `L`; Read on n1 returns `R`; Read on n2 returns empty / not found | Give up consistency between nodes. We let all nodes accept writes to stay available (AP system), but uncontacted nodes like n2 don't get the update. |
 | MULTI_LEADER | Network split separating n0 from n1, n2 (all nodes act as peer leaders in the implemented system) | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); n1 copies its write to reachable peer n2 | Read on n0 returns `L`; Read on n1 and n2 both return `R` | Give up consistency between the two sides of the split. Both sides stay available to accept writes (AP system), so conflicting values must be merged later. |
 
-### conflicts.py
-
-*Think Distributed Systems* §9.3.3. After a split, two different values for one key.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| OP_CRDT |  |  |  |  |
-| STATE_CRDT |  |  |  |  |
-| APP_RECONCILE |  |  |  |  |
-
-### processing_guarantees.py
-
-*Think Distributed Systems* ch. 4. A step whose Write is in doubt (timeout or a killed process).
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| AT_MOST_ONCE |  |  |  |  |
-| AT_LEAST_ONCE |  |  |  |  |
-| EXACTLY_ONCE |  |  |  |  |
-| resume LOG |  |  |  |  |
-| resume SNAPSHOT |  |  |  |  |
-
 ### request_routing.py
 
 *Designing Data-Intensive Applications* ch. 7 (request routing). A Write sent to a node that no longer owns the key.
@@ -236,59 +196,62 @@ W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM fo
 | DIRECTORY_TIER | A node `m` joins and takes over `alpha` after `n1` recorded `alpha -> n0` | `n1` looks up `alpha` (`n0`) and sends there; `n0` answers `not owner` with `owner=m`; `n1` fixes the entry and retries once to `m`, which stores it | Read `alpha` on `m` returns the new bytes. `n0` still holds the bytes it stored before `m` joined (moving them is the partitioning plugin's job) | A lookup before each request, and a directory that can be stale. One retry fixes one stale entry; if the directory is wrong twice, the Write fails |
 | CLIENT_AWARE | Write `beta` on `n1`, which is not the owner | `n1` stores nothing and returns `ok=False error="not owner" owner=n0`; the client resends to `n0` | Read on `n1` returns `not owner` even if it has a copy; Read on `n0` returns the bytes once the client resent the Write there | The cluster does less work, but every client has to know the owner map and redo the request itself |
 
-### leader_election.py
-
-Leader election (Bully, ring, majority/term). The leader is killed, or the members are split. Majority for RAFT_STYLE is `N//2 + 1` of current membership.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| BULLY |  |  |  |  |
-| RING |  |  |  |  |
-| RAFT_STYLE |  |  |  |  |
-
-### session_models.py
-
-*Database Internals* ch. 11 (session models). Two Reads of the same key after a Write, possibly on different nodes.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| READ_OWN_WRITES |  |  |  |  |
-| MONOTONIC_READS |  |  |  |  |
-| NO_SESSION |  |  |  |  |
-
-### atomic_commit.py
-
-*Think Distributed Systems* ch. 6 (2PC); saga compensation. Two keys, and a crash in the middle.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| TWO_PC |  |  |  |  |
-| SAGA |  |  |  |  |
-| SINGLE_KEY_ONLY |  |  |  |  |
-
 ## Protocol notes
 
 If you own one of these files, say a little more:
 
 - **replication.py:** for two Writes, what goes on the wire for state vs log vs snapshot catch-up
 When mode STATE has two writes, we will update the node to the latest state from the owner. When the mode is LOG, we will update the node using the sequence of operations that another unpaused replica has. `write(alpha, 1)` and `write(alpha,2)` for example are operations that will be applied to the node that was paused (we have to unpause it first). LOG_WITH_SNAPSHOT would use the snapshot in the history of the operations and then apply all the operations after that snapshot. In the case of only two writes, the snapshot would be the first write and then apply the second write.
-- **conflicts.py:** the exact rule that turns two blobs into one, for each policy
-- **processing_guarantees.py:** the step list, the idempotency key, how resume from a log differs from resume from a snapshot
-- **atomic_commit.py:** the 2PC messages for keys `a` and `b`; how saga compensation restores `a`; what the plugin does if a participant is killed in prepare
-- **leader_election.py:** who wins, what a partition does, how Raft-style differs from Bully and Ring
-- **partitioning.py:** key → partition → node; which keys move when a node is added under slots vs `mod N`
 
 ## Demo
 
 Numbered steps: processes to start, client commands, faults, and the output you expect.
 
-1.
-2.
-3.
+**leader_replication demo:**
+
+1. **Start the three cluster nodes** (from `week06/`, in three separate terminal windows):
+   ```bash
+   python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+   python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+   python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+   ```
+
+2. **Verify cluster health and status**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 status
+   ```
+   *Expected output:* `ok=True node_id=n0 leader=n0 term=0 key_count=0 peers=['n0', 'n1', 'n2'] faults pause=False delay_ms=0 drop_to=[]`
+
+3. **Simulate a network split by isolating leader `n0`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 fault --isolate on
+   ```
+   *Expected output:* `faults pause=False delay_ms=0 drop_to=['n1', 'n2']`
+
+4. **Attempt Writes under `SINGLE_LEADER`**:
+   Write to leader `n0`:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --leader-replication SINGLE_LEADER
+   ```
+   *Expected output:* `ok=True owner=n0 acked_by=['n0']`
+
+   Write to isolated follower `n1`:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --leader-replication SINGLE_LEADER
+   ```
+   *Expected output:* `ok=False error='not leader' owner=n0`
+
+5. **Read key `alpha` on both sides to verify state**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 read alpha
+   python3 -m platform.client --addr 127.0.0.1:9601 read alpha
+   ```
+   *Expected output on `n0`:* `ok=True value=one found=True served_by=n0`  
+   *Expected output on `n1`:* `ok=True found=False served_by=n1`
 
 ## What we are not building this week
 
-A sentence or two (for example: a full Raft, MVCC, or an application data type).
+We are not building a full Raft consensus system, multi-key transactions, or complex database data types. Keys and values are just simple raw byte strings.
 
 ## Git
 
