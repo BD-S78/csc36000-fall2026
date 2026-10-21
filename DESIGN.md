@@ -15,7 +15,7 @@ Each person lists a different plugin filename.
 | Bryan Dong | bryan.dong64 | leader_replication.py | bryan.dong64/leader_replication |
 | Misael Perez Ramales | misael.perez66 | replication.py | misael.perez66/replication |
 | Xinhang Yang | xinhang.yang65 | request_routing.py | xinhang.yang65/request_routing |
-|  |  |  |  |
+| David Girgis | David.Girgis64 | write_completion.py | Dgirgis000/write_completion |
 |  |  |  |  |
 
 ## Platform reminder
@@ -25,12 +25,6 @@ Values are opaque bytes.
 ## Per owned plugin
 
 Repeat this block for each person.
-
-**Plugin file:**  
-**Modes we will implement** (see that plugin’s section in `week06/README.md`):  
-**One history we will demo** (the fault or change, the Writes/Reads, the bytes you expect on which node):  
-**Commands** (provided client, against a `node` cluster):  
-**A mode combination that should fail, and the error Write or Read returns:**
 
 **Plugin file:** replication.py  
 **Modes we will implement:** STATE, LOG, LOG_WITH_SNAPSHOT
@@ -130,24 +124,35 @@ python3 -m platform.client --addr 127.0.0.1:9601 write gamma one --request-routi
 - DIRECTORY_TIER: a Write that already came from a routing node (`hop > 0`) is not routed again. A non-owner answers `not owner` with the owner it knows, so the sender can fix its directory and retry once. If the retry also fails, the Write returns that error rather than guessing again.
 - For `leader_replication.py`: `Write` in `node.py` asks `leader_replication.admit` first and only reaches this plugin when `admit` raises `NotImplementedError`. To run both plugins in one cluster, `admit` should raise `NotImplementedError` when the Write has no `--leader-replication` flag. Reads are not affected.
 
+**Plugin file:** write_completion.py
+**Modes we will implement:** ACK_ONE, ACK_QUORUM, ACK_ALL
+**One history we will demo:** Start n0, n1, and n2, then pause n2. Write a different key in each mode so earlier runs cannot affect the result. ACK_ONE returns after one acknowledgment; ACK_QUORUM returns after two; ACK_ALL returns `ok=False error='ack timeout'` because n2 cannot acknowledge. The `acked_by` list shows which nodes completed each Write. Unpause n2, run `rebalance` to retry missing copies, and Read the keys on n2; each repaired key has its written bytes. A timed-out Write may already have reached some nodes, so its failure does not mean rollback.
+
+**Commands** (from `week06/`, with all three nodes started using `cluster.json`):
+```bash
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_one one --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_quorum two --write-completion ACK_QUORUM
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_all three --write-completion ACK_ALL
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause off
+python3 -m platform.client --addr 127.0.0.1:9600 rebalance --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_one
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_quorum
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha_all
+```
+**A mode combination that should fail, and the error Write or Read returns:** Pause n1 and n2, then Write `alpha_fail=four` on n0 with `--write-completion ACK_QUORUM`. Only one of three members can acknowledge, so Write returns `ok=False error='ack timeout'`.
+
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9602 fault --pause on
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha_fail four --write-completion ACK_QUORUM
+```
 
 ## Tradeoffs
 
 For each mode you implement, name a fault or change — pause a node, split the network, add a node, two Writes at once — and fill the columns.
 
 Keep the tables for the plugins your group owns; you can drop the others.
-
-### partitioning.py
-
-*Think Distributed Systems* ch. 7; *Designing Data-Intensive Applications* ch. 7. Where a key lives, and which keys move when you add a node. HASH_MOD remaps most keys; SLOTS moves about `1/(N+1)`; KEY_RANGE keeps neighbors together; DIRECTORY pin holds; ITEM has no pin. `N` is `len(node.nodes)`.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| HASH_MOD |  |  |  |  |
-| KEY_RANGE |  |  |  |  |
-| SLOTS |  |  |  |  |
-| DIRECTORY |  |  |  |  |
-| ITEM |  |  |  |  |
 
 ### replication.py
 
@@ -165,9 +170,11 @@ Keep the tables for the plugins your group owns; you can drop the others.
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| ACK_ALL |  |  |  |  |
-| ACK_ONE |  |  |  |  |
-| ACK_QUORUM |  |  |  |  |
+| ACK_ALL | Pause n2 in a three-node cluster. | Cannot collect all three acknowledgments, so returns `ok=False error='ack timeout'`. n0 or n1 may still have applied the Write. | After n2 resumes and repair runs, Read `alpha_all` on n2 returns `three`. | One slow or unavailable member prevents a successful Write. |
+| ACK_ONE | Pause n2 in a three-node cluster. | Returns `ok=True` after one acknowledgment, even though n2 has not received the bytes. | Before repair, n2 can have stale or missing bytes; after it resumes and repair runs, Read `alpha_one` on n2 returns `one`. | An acknowledged value may exist on only one node, so losing that node risks losing the Write. |
+| ACK_QUORUM | Pause n2; for a separate Write, pause n1 and n2. | With N=3, returns `ok=True` after two acknowledgments; returns `ack timeout` when fewer than two can acknowledge. | An acknowledged replica has the new bytes. A single-node Read on a stale replica is not guaranteed current until repair; after repair, Read `alpha_quorum` on n2 returns `two`. | A majority must be reachable, increasing latency and reducing Write availability compared with ACK_ONE. |
+
+W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM for `N//2 + 1`, and ACK_ALL for `N`, where `N = len(node.nodes)`. The plugin records copies still needing delivery and retries them during repair. ACK_QUORUM controls Write completion only; the provided client does not perform quorum Reads.
 
 ### leader_replication.py
 
@@ -179,28 +186,6 @@ Keep the tables for the plugins your group owns; you can drop the others.
 | LEADERLESS | Network split separating n0 from n1, n2 | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); neither node copies writes to peers | Read on n0 returns `L`; Read on n1 returns `R`; Read on n2 returns empty / not found | Give up consistency between nodes. We let all nodes accept writes to stay available (AP system), but uncontacted nodes like n2 don't get the update. |
 | MULTI_LEADER | Network split separating n0 from n1, n2 (all nodes act as peer leaders in the implemented system) | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); n1 copies its write to reachable peer n2 | Read on n0 returns `L`; Read on n1 and n2 both return `R` | Give up consistency between the two sides of the split. Both sides stay available to accept writes (AP system), so conflicting values must be merged later. |
 
-### conflicts.py
-
-*Think Distributed Systems* §9.3.3. After a split, two different values for one key.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| OP_CRDT |  |  |  |  |
-| STATE_CRDT |  |  |  |  |
-| APP_RECONCILE |  |  |  |  |
-
-### processing_guarantees.py
-
-*Think Distributed Systems* ch. 4. A step whose Write is in doubt (timeout or a killed process).
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| AT_MOST_ONCE |  |  |  |  |
-| AT_LEAST_ONCE |  |  |  |  |
-| EXACTLY_ONCE |  |  |  |  |
-| resume LOG |  |  |  |  |
-| resume SNAPSHOT |  |  |  |  |
-
 ### request_routing.py
 
 *Designing Data-Intensive Applications* ch. 7 (request routing). A Write sent to a node that no longer owns the key.
@@ -211,58 +196,157 @@ Keep the tables for the plugins your group owns; you can drop the others.
 | DIRECTORY_TIER | A node `m` joins and takes over `alpha` after `n1` recorded `alpha -> n0` | `n1` looks up `alpha` (`n0`) and sends there; `n0` answers `not owner` with `owner=m`; `n1` fixes the entry and retries once to `m`, which stores it | Read `alpha` on `m` returns the new bytes. `n0` still holds the bytes it stored before `m` joined (moving them is the partitioning plugin's job) | A lookup before each request, and a directory that can be stale. One retry fixes one stale entry; if the directory is wrong twice, the Write fails |
 | CLIENT_AWARE | Write `beta` on `n1`, which is not the owner | `n1` stores nothing and returns `ok=False error="not owner" owner=n0`; the client resends to `n0` | Read on `n1` returns `not owner` even if it has a copy; Read on `n0` returns the bytes once the client resent the Write there | The cluster does less work, but every client has to know the owner map and redo the request itself |
 
-### leader_election.py
-
-Leader election (Bully, ring, majority/term). The leader is killed, or the members are split. Majority for RAFT_STYLE is `N//2 + 1` of current membership.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| BULLY |  |  |  |  |
-| RING |  |  |  |  |
-| RAFT_STYLE |  |  |  |  |
-
-### session_models.py
-
-*Database Internals* ch. 11 (session models). Two Reads of the same key after a Write, possibly on different nodes.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| READ_OWN_WRITES |  |  |  |  |
-| MONOTONIC_READS |  |  |  |  |
-| NO_SESSION |  |  |  |  |
-
-### atomic_commit.py
-
-*Think Distributed Systems* ch. 6 (2PC); saga compensation. Two keys, and a crash in the middle.
-
-| Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
-| --- | --- | --- | --- | --- |
-| TWO_PC |  |  |  |  |
-| SAGA |  |  |  |  |
-| SINGLE_KEY_ONLY |  |  |  |  |
-
 ## Protocol notes
 
 If you own one of these files, say a little more:
 
 - **replication.py:** for two Writes, what goes on the wire for state vs log vs snapshot catch-up
-- **conflicts.py:** the exact rule that turns two blobs into one, for each policy
-- **processing_guarantees.py:** the step list, the idempotency key, how resume from a log differs from resume from a snapshot
-- **atomic_commit.py:** the 2PC messages for keys `a` and `b`; how saga compensation restores `a`; what the plugin does if a participant is killed in prepare
-- **leader_election.py:** who wins, what a partition does, how Raft-style differs from Bully and Ring
-- **partitioning.py:** key → partition → node; which keys move when a node is added under slots vs `mod N`
+When mode STATE has two writes, we will update the node to the latest state from the owner. When the mode is LOG, we will update the node using the sequence of operations that another unpaused replica has. `write(alpha, 1)` and `write(alpha,2)` for example are operations that will be applied to the node that was paused (we have to unpause it first). LOG_WITH_SNAPSHOT would use the snapshot in the history of the operations and then apply all the operations after that snapshot. In the case of only two writes, the snapshot would be the first write and then apply the second write.
 
 ## Demo
 
 Numbered steps: processes to start, client commands, faults, and the output you expect.
 
-1.
-2.
-3.
+**replication demo:**
+## Replication Demo: STATE vs. LOG vs. LOG_WITH_SNAPSHOT
+1. Start the Cluster
+Open three terminals in `week06`:
+**Terminal 1**
+```bash
+python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+```
+**Terminal 2**
+```bash
+python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+```
+**Terminal 3**
+```bash
+python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+```
+You can check the terminal's health:
+```bash
+python3 -m platform.client --addr 127.0.0.1:9600 health
+```
+
+2. Test Each Replication Mode
+
+To test all modes use `STATE`, `LOG`, and `LOG_WITH_SNAPSHOT` separately. 
+`n0` owns `alpha`, and `n1` is a non-owner replica.
+### Pause n1
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause on
+```
+
+### B. Perform two writes
+Replace `<MODE>` with `STATE`, `LOG`, or `LOG_WITH_SNAPSHOT` of your choice.
+```bash
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --replication <MODE> --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha two --replication <MODE> --write-completion ACK_ONE
+```
+### C. Resume n1 and read
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause off
+python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication <MODE>
+```
+3. Compare the Modes
+
+| Mode | What the lagging replica receives |
+|---|---|
+| `STATE` | Latest state |
+| `LOG` | Missing write operations, applied in order |
+| `LOG_WITH_SNAPSHOT` | Log entries or a snapshot plus subsequent entries |
+
+
+
+**leader_replication demo:**
+
+1. **Start the three cluster nodes** (from `week06/`, in three separate terminal windows):
+   ```bash
+   python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+   python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+   python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+   ```
+
+2. **Verify cluster health and status**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 status
+   ```
+   *Expected output:* `ok=True node_id=n0 leader=n0 term=0 key_count=0 peers=['n0', 'n1', 'n2'] faults pause=False delay_ms=0 drop_to=[]`
+
+3. **Simulate a network split by isolating leader `n0`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 fault --isolate on
+   ```
+   *Expected output:* `ok=True pause=False drop_to=['n1', 'n2'] delay_ms=0`
+
+4. **Attempt Writes under `SINGLE_LEADER`**:
+   Write to leader `n0`:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --leader-replication SINGLE_LEADER
+   ```
+   *Expected output:* `ok=True error='' owner=n0 acked_by=['n0']`
+
+   Write to isolated follower `n1`:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --leader-replication SINGLE_LEADER
+   ```
+   *Expected output:* `ok=False error='not leader' owner=n0 acked_by=[]`
+
+5. **Read key `alpha` on both sides to verify state**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 read alpha
+   python3 -m platform.client --addr 127.0.0.1:9601 read alpha
+   ```
+   *Expected output on `n0`:* `ok=True error='' found=True served_by=n0 value=one`  
+   *Expected output on `n1`:* `ok=False error='not owner' found=False served_by=n1 value=` (follower store is empty)
+
+**request_routing demo:**
+
+1. **Start the three cluster nodes** (from `week06/`, in three separate terminal windows):
+   ```bash
+   python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+   python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+   python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+   ```
+
+2. **Write to non-owner `n1` under `FORWARD`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha one --request-routing FORWARD
+   ```
+   *Expected output:* `ok=True owner=n0`
+
+3. **Write to non-owner `n1` under `CLIENT_AWARE`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write beta one --request-routing CLIENT_AWARE
+   ```
+   *Expected output:* `ok=False error='not owner' owner=n0`
+
+4. **Write under `DIRECTORY_TIER`** (`n1` records `alpha -> n0`):
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --request-routing DIRECTORY_TIER
+   ```
+   *Expected output:* `ok=True owner=n0`
+
+5. **Add node `m`, then write again** (`n1`'s entry is stale, so it retries once to `m`):
+   ```bash
+   python3 -m platform.node --node-id m --port 9603 --peers m=127.0.0.1:9603,n0=127.0.0.1:9600,n1=127.0.0.1:9601,n2=127.0.0.1:9602
+   python3 -m platform.client --addr 127.0.0.1:9600 add-node m 127.0.0.1 9603
+   python3 -m platform.client --addr 127.0.0.1:9601 add-node m 127.0.0.1 9603
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha three --request-routing DIRECTORY_TIER
+   ```
+   *Expected output:* `ok=True owner=m`
+
+6. **Routing loop under `FORWARD`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 add-node a 127.0.0.1 9602
+   python3 -m platform.client --addr 127.0.0.1:9602 add-node a 127.0.0.1 9601
+   python3 -m platform.client --addr 127.0.0.1:9601 write gamma one --request-routing FORWARD
+   ```
+   *Expected output:* `ok=False error='hop limit'`
 
 ## What we are not building this week
 
-A sentence or two (for example: a full Raft, MVCC, or an application data type).
+We are not building a full Raft consensus system, multi-key transactions, or complex database data types. Keys and values are just simple raw byte strings.
 
 ## Git
 
