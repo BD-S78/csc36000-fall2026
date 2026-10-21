@@ -226,28 +226,28 @@ Numbered steps: processes to start, client commands, faults, and the output you 
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9600 fault --isolate on
    ```
-   *Expected output:* `faults pause=False delay_ms=0 drop_to=['n1', 'n2']`
+   *Expected output:* `ok=True pause=False drop_to=['n1', 'n2'] delay_ms=0`
 
 4. **Attempt Writes under `SINGLE_LEADER`**:
    Write to leader `n0`:
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --leader-replication SINGLE_LEADER
    ```
-   *Expected output:* `ok=True owner=n0 acked_by=['n0']`
+   *Expected output:* `ok=True error='' owner=n0 acked_by=['n0']`
 
    Write to isolated follower `n1`:
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --leader-replication SINGLE_LEADER
    ```
-   *Expected output:* `ok=False error='not leader' owner=n0`
+   *Expected output:* `ok=False error='not leader' owner=n0 acked_by=[]`
 
 5. **Read key `alpha` on both sides to verify state**:
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9600 read alpha
    python3 -m platform.client --addr 127.0.0.1:9601 read alpha
    ```
-   *Expected output on `n0`:* `ok=True value=one found=True served_by=n0`  
-   *Expected output on `n1`:* `ok=True found=False served_by=n1`
+   *Expected output on `n0`:* `ok=True error='' found=True served_by=n0 value=one`  
+   *Expected output on `n1`:* `ok=False error='not owner' found=False served_by=n1 value=` (follower store is empty)
 
 ## What we are not building this week
 
