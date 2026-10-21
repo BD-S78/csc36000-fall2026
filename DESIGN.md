@@ -207,6 +207,57 @@ When mode STATE has two writes, we will update the node to the latest state from
 
 Numbered steps: processes to start, client commands, faults, and the output you expect.
 
+**replication demo:**
+## Replication Demo: STATE vs. LOG vs. LOG_WITH_SNAPSHOT
+1. Start the Cluster
+Open three terminals in `week06`:
+**Terminal 1**
+```bash
+python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+```
+**Terminal 2**
+```bash
+python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+```
+**Terminal 3**
+```bash
+python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+```
+You can check the terminal's health:
+```bash
+python3 -m platform.client --addr 127.0.0.1:9600 health
+```
+
+2. Test Each Replication Mode
+
+To test all modes use `STATE`, `LOG`, and `LOG_WITH_SNAPSHOT` separately. 
+`n0` owns `alpha`, and `n1` is a non-owner replica.
+### Pause n1
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause on
+```
+
+### B. Perform two writes
+Replace `<MODE>` with `STATE`, `LOG`, or `LOG_WITH_SNAPSHOT` of your choice.
+```bash
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --replication <MODE> --write-completion ACK_ONE
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha two --replication <MODE> --write-completion ACK_ONE
+```
+### C. Resume n1 and read
+```bash
+python3 -m platform.client --addr 127.0.0.1:9601 fault --pause off
+python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication <MODE>
+```
+3. Compare the Modes
+
+| Mode | What the lagging replica receives |
+|---|---|
+| `STATE` | Latest state |
+| `LOG` | Missing write operations, applied in order |
+| `LOG_WITH_SNAPSHOT` | Log entries or a snapshot plus subsequent entries |
+
+
+
 **leader_replication demo:**
 
 1. **Start the three cluster nodes** (from `week06/`, in three separate terminal windows):
