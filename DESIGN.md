@@ -300,6 +300,50 @@ python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication <MODE>
    *Expected output on `n0`:* `ok=True error='' found=True served_by=n0 value=one`  
    *Expected output on `n1`:* `ok=False error='not owner' found=False served_by=n1 value=` (follower store is empty)
 
+**request_routing demo:**
+
+1. **Start the three cluster nodes** (from `week06/`, in three separate terminal windows):
+   ```bash
+   python3 -m platform.node --node-id n0 --port 9600 --config cluster.json
+   python3 -m platform.node --node-id n1 --port 9601 --config cluster.json
+   python3 -m platform.node --node-id n2 --port 9602 --config cluster.json
+   ```
+
+2. **Write to non-owner `n1` under `FORWARD`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha one --request-routing FORWARD
+   ```
+   *Expected output:* `ok=True owner=n0`
+
+3. **Write to non-owner `n1` under `CLIENT_AWARE`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write beta one --request-routing CLIENT_AWARE
+   ```
+   *Expected output:* `ok=False error='not owner' owner=n0`
+
+4. **Write under `DIRECTORY_TIER`** (`n1` records `alpha -> n0`):
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --request-routing DIRECTORY_TIER
+   ```
+   *Expected output:* `ok=True owner=n0`
+
+5. **Add node `m`, then write again** (`n1`'s entry is stale, so it retries once to `m`):
+   ```bash
+   python3 -m platform.node --node-id m --port 9603 --peers m=127.0.0.1:9603,n0=127.0.0.1:9600,n1=127.0.0.1:9601,n2=127.0.0.1:9602
+   python3 -m platform.client --addr 127.0.0.1:9600 add-node m 127.0.0.1 9603
+   python3 -m platform.client --addr 127.0.0.1:9601 add-node m 127.0.0.1 9603
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha three --request-routing DIRECTORY_TIER
+   ```
+   *Expected output:* `ok=True owner=m`
+
+6. **Routing loop under `FORWARD`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9601 add-node a 127.0.0.1 9602
+   python3 -m platform.client --addr 127.0.0.1:9602 add-node a 127.0.0.1 9601
+   python3 -m platform.client --addr 127.0.0.1:9601 write gamma one --request-routing FORWARD
+   ```
+   *Expected output:* `ok=False error='hop limit'`
+
 ## What we are not building this week
 
 We are not building a full Raft consensus system, multi-key transactions, or complex database data types. Keys and values are just simple raw byte strings.
