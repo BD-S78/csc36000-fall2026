@@ -57,11 +57,13 @@ It should return a `node=paused`
 
 **Plugin file:** leader_replication.py  
 **Modes we will implement:** SINGLE_LEADER, LEADERLESS, MULTI_LEADER  
-**One history we will demo:** We split the cluster by isolating leader `n0` from followers `n1` and `n2`. Under `SINGLE_LEADER`, a Write on leader `n0` succeeds (`alpha=one`), while a Write on follower `n1` fails with `not leader` (and reading `alpha` returns `one` on `n0` and empty on `n1`). Under `LEADERLESS`, writes on both sides succeed (`alpha=L` on `n0` and `alpha=R` on `n1`), demonstrating that both partitions remain available to write while their stores diverge.  
+**One history we will demo:** We split the cluster by isolating leader `n0` from followers `n1` and `n2`. Under `SINGLE_LEADER`, a Write on leader `n0` succeeds (`alpha=one`), while a Write on follower `n1` fails with `not leader` (and reading `alpha` returns `one` on `n0` and `not owner` on `n1`). Under `LEADERLESS`, writes on both sides succeed (`alpha=L` on `n0` and `alpha=R` on `n1`), demonstrating that both partitions remain available to write while their stores diverge. Under `MULTI_LEADER`, writes on both sides also succeed, and `n1` copies its write to reachable peer `n2`, so `n2` returns `R`.  
 **Commands** (provided client, against a `node` cluster):  
 ```bash
-# 1. Fault: isolate leader n0 from n1 and n2
+# 1. Fault: isolate leader n0 from n1 and n2, in both directions
 python3 -m platform.client --addr 127.0.0.1:9600 fault --isolate on
+python3 -m platform.client --addr 127.0.0.1:9601 fault --drop-to n0
+python3 -m platform.client --addr 127.0.0.1:9602 fault --drop-to n0
 
 # 2. SINGLE_LEADER demo: n0 succeeds, n1 fails with 'not leader'
 python3 -m platform.client --addr 127.0.0.1:9600 write alpha one --leader-replication SINGLE_LEADER
@@ -71,12 +73,17 @@ python3 -m platform.client --addr 127.0.0.1:9601 write alpha two --leader-replic
 python3 -m platform.client --addr 127.0.0.1:9600 write alpha L --leader-replication LEADERLESS
 python3 -m platform.client --addr 127.0.0.1:9601 write alpha R --leader-replication LEADERLESS
 
-# 4. Reads: n0 returns L, n1 returns R
+# 4. MULTI_LEADER demo: both sides accept, n1 copies to n2
+python3 -m platform.client --addr 127.0.0.1:9600 write alpha L --leader-replication MULTI_LEADER
+python3 -m platform.client --addr 127.0.0.1:9601 write alpha R --leader-replication MULTI_LEADER
+
+# 5. Reads: n0 returns L, n1 returns R, n2 returns R
 python3 -m platform.client --addr 127.0.0.1:9600 read alpha
 python3 -m platform.client --addr 127.0.0.1:9601 read alpha
+python3 -m platform.client --addr 127.0.0.1:9602 read alpha
 ```
 **A mode combination that should fail, and the error Write or Read returns:**  
-A Write to a follower (`n1` or `n2`) with `--leader-replication SINGLE_LEADER` returns `ok=False error="not leader"`.
+A Write to an isolated follower (`n1` or `n2`) with `--leader-replication SINGLE_LEADER` cannot reach the leader to forward and returns `ok=False error="not leader"`.
 
 **Plugin file:** request_routing.py  
 **Modes we will implement:** FORWARD, DIRECTORY_TIER, CLIENT_AWARE  
@@ -182,7 +189,7 @@ W uses the current membership: ACK_ONE waits for 1 acknowledgment, ACK_QUORUM fo
 
 | Mode | Fault or change | What Write does | What Read returns on which node | What you gave up |
 | --- | --- | --- | --- | --- |
-| SINGLE_LEADER | Network split separating leader n0 from followers n1, n2 | Writes to leader n0 succeed; writes to followers n1, n2 fail with `not leader` | Read on n0 returns latest bytes; Read on n1, n2 returns old or empty data | Give up availability on the follower side. We reject writes on n1 and n2 so data never diverges (CP system). |
+| SINGLE_LEADER | Network split separating leader n0 from followers n1, n2 | Writes to leader n0 succeed. Followers n1, n2 fail with `not leader` because the split prevents forwarding to the leader | Read on n0 returns latest bytes; Read on n1, n2 returns old or empty data | Give up availability on the follower side. Followers cannot accept writes when cut off from leader so there are no conflicting writes (CP system). |
 | LEADERLESS | Network split separating n0 from n1, n2 | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); neither node copies writes to peers | Read on n0 returns `L`; Read on n1 returns `R`; Read on n2 returns empty / not found | Give up consistency between nodes. We let all nodes accept writes to stay available (AP system), but uncontacted nodes like n2 don't get the update. |
 | MULTI_LEADER | Network split separating n0 from n1, n2 (all nodes act as peer leaders in the implemented system) | Writes to both sides succeed (`alpha=L` on n0, `alpha=R` on n1); n1 copies its write to reachable peer n2 | Read on n0 returns `L`; Read on n1 and n2 both return `R` | Give up consistency between the two sides of the split. Both sides stay available to accept writes (AP system), so conflicting values must be merged later. |
 
@@ -271,13 +278,18 @@ python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication <MODE>
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9600 status
    ```
-   *Expected output:* `ok=True node_id=n0 leader=n0 term=0 key_count=0 peers=['n0', 'n1', 'n2'] faults pause=False delay_ms=0 drop_to=[]`
+   *Expected output:*
+   `ok=True node_id=n0 leader=n0 term=0 key_count=0 peers=['n0', 'n1', 'n2']`
+   `faults pause=False delay_ms=0 drop_to=[]`
+   `keys_per_node {'n1': 0, 'n2': 0, 'n0': 0}`
 
-3. **Simulate a network split by isolating leader `n0`**:
+3. **Simulate a network split by isolating leader `n0` in both directions**:
    ```bash
    python3 -m platform.client --addr 127.0.0.1:9600 fault --isolate on
+   python3 -m platform.client --addr 127.0.0.1:9601 fault --drop-to n0
+   python3 -m platform.client --addr 127.0.0.1:9602 fault --drop-to n0
    ```
-   *Expected output:* `ok=True pause=False drop_to=['n1', 'n2'] delay_ms=0`
+   *Expected output:* n0 `ok=True pause=False drop_to=['n1', 'n2'] delay_ms=0`; n1 and n2 `ok=True pause=False drop_to=['n0'] delay_ms=0`
 
 4. **Attempt Writes under `SINGLE_LEADER`**:
    Write to leader `n0`:
@@ -299,6 +311,24 @@ python3 -m platform.client --addr 127.0.0.1:9601 read alpha --replication <MODE>
    ```
    *Expected output on `n0`:* `ok=True error='' found=True served_by=n0 value=one`  
    *Expected output on `n1`:* `ok=False error='not owner' found=False served_by=n1 value=` (follower store is empty)
+
+6. **Writes under `LEADERLESS`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 write alpha L --leader-replication LEADERLESS
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha R --leader-replication LEADERLESS
+   python3 -m platform.client --addr 127.0.0.1:9600 read alpha
+   python3 -m platform.client --addr 127.0.0.1:9601 read alpha
+   python3 -m platform.client --addr 127.0.0.1:9602 read alpha
+   ```
+   *Expected output:* both Writes `ok=True`; Reads return `L` on `n0`, `R` on `n1`, and `ok=False error='not owner'` on `n2`.
+
+7. **Writes under `MULTI_LEADER`**:
+   ```bash
+   python3 -m platform.client --addr 127.0.0.1:9600 write alpha L --leader-replication MULTI_LEADER
+   python3 -m platform.client --addr 127.0.0.1:9601 write alpha R --leader-replication MULTI_LEADER
+   python3 -m platform.client --addr 127.0.0.1:9602 read alpha
+   ```
+   *Expected output:* both Writes `ok=True`; Read on `n2` returns `R` because `n1` copied its Write to `n2`.
 
 **request_routing demo:**
 
