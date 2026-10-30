@@ -244,12 +244,12 @@ def start_registration_loop(
     host: str,
     port: int,
     *,
-    interval_s: int = 3600,
+    interval_s: int = 5,
 ) -> None:
     """
     Background heartbeat: periodically re-register so primary can expire stale nodes.
     """
-    reg_url = primary_url.rstrip("/") + "/register"
+    reg_url = primary_url.rstrip("/") + "/heartbeat"
     payload = {
         "node_id": node_id,
         "host": host,
@@ -265,12 +265,29 @@ def start_registration_loop(
                 _post_json(reg_url, payload, timeout_s=5)
             except Exception as e:
                 # Ignore transient network failures; primary may be down temporarily.
-                print(f"error when registering node to primary: {e}")
+                print(f"error when heartbeating node to primary: {e}")
                 pass
             time.sleep(interval_s)
 
     th = threading.Thread(target=loop, daemon=True)
     th.start()
+
+
+def send_unregister(primary_url: str, node_id: str, host: str, port: int) -> None:
+    """Send a final graceful shutdown signal so the primary can remove this node immediately."""
+    if not primary_url:
+        return
+    url = primary_url.rstrip("/") + "/unregister"
+    payload = {
+        "node_id": node_id,
+        "host": host,
+        "port": port,
+        "ts": time.time(),
+    }
+    try:
+        _post_json(url, payload, timeout_s=5)
+    except Exception as e:
+        print(f"warning: graceful unregister failed: {e}")
 
 
 # ----------------------------
@@ -363,7 +380,7 @@ def main() -> None:
 
     ap.add_argument("--primary", default=None, help="Primary coordinator URL, e.g. http://134.74.160.1:9200")
     ap.add_argument("--public-host", default=None, help="Host/IP to advertise to primary (default: auto-detect).")
-    ap.add_argument("--register-interval", type=int, default=3600, help="Seconds between heartbeats (default 3600).")
+    ap.add_argument("--register-interval", type=int, default=5, help="Seconds between heartbeats (default 5).")
 
     args = ap.parse_args()
 
@@ -406,6 +423,8 @@ def main() -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        if args.primary:
+            send_unregister(args.primary, node_id, advertised_host, args.port)
         print("\n[secondary_node] KeyboardInterrupt received; shutting down gracefully...", flush=True)
         httpd.shutdown()
     finally:
